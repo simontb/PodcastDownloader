@@ -18,6 +18,11 @@ import okhttp3.Response;
 import okio.BufferedSink;
 import okio.Okio;
 
+/// usr/bin/env jbang "$0" "$@" ; exit $?
+
+private static final OkHttpClient client = new OkHttpClient();
+private static final DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("yyyyMMdd");
+
 void main(String[] args) throws Exception {
     if (args.length < 2) {
         System.err.println("Usage: PodcastDownloader <rss_url_or_file> <output_dir>");
@@ -74,7 +79,7 @@ void main(String[] args) throws Exception {
         final String title = entry.getTitle() != null ? entry.getTitle() : "Episode";
         final String titleSanitized = sanitizeFilename(title);
 
-        final        Instant pubInstant = parsePubDate(entry);
+        final Instant pubInstant = parsePubDate(entry);
         final ZonedDateTime pubDate = pubInstant.atZone(ZoneId.systemDefault());
         final String datePrefix = dateFormatter.format(pubDate);
         final String filename = datePrefix + " - " + titleSanitized + ".mp3";
@@ -125,10 +130,6 @@ void main(String[] args) throws Exception {
     IO.println("\nIssues");
     errors.forEach((key, value) -> IO.println("\n\n" + key + ":\n" + String.join("\n", value)));
 }
-/// usr/bin/env jbang "$0" "$@" ; exit $?
-private static final OkHttpClient client = new OkHttpClient();
-
-private static final DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("yyyyMMdd");
 
 private static String sanitizeFilename(String name) {
     return name.trim()
