@@ -18,8 +18,116 @@ import okhttp3.Response;
 import okio.BufferedSink;
 import okio.Okio;
 
+void main(String[] args) throws Exception {
+    if (args.length < 2) {
+        System.err.println("Usage: PodcastDownloader <rss_url_or_file> <output_dir>");
+        System.err.println("RSS can be remote URL or local file path.");
+        System.exit(1);
+    }
+
+    final String rssSource = args[0];
+    final Path outDir = Paths.get(args[1]).toAbsolutePath().normalize();
+
+    // Handle local file or URL
+    final InputStream rssStream;
+    if (Files.exists(Paths.get(rssSource))) {
+        rssStream = Files.newInputStream(Paths.get(rssSource));
+        IO.println("Reading local RSS file: " + rssSource);
+    } else {
+        IO.println("Downloading RSS from: " + rssSource);
+        final Request request = new Request.Builder().url(rssSource).build();
+        try (final Response response = client.newCall(request).execute()) {
+            if (!response.isSuccessful()) {
+                throw new IOException("Failed to fetch RSS: HTTP " + response.code());
+            }
+            rssStream = response.body().byteStream();
+        }
+    }
+
+    final byte[] rssBytes;
+    try {
+        rssBytes = rssStream.readAllBytes();
+    } finally {
+        rssStream.close();
+    }
+
+    final Charset rssCharset = detectCharset(rssBytes);
+    final String rssXml = new String(rssBytes, rssCharset);
+    String fixedXml = ensureKnownNamespaces(rssXml);
+    fixedXml = fixVoidTags(fixedXml);
+
+    final SyndFeedInput input = new SyndFeedInput();
+    final SyndFeed feed;
+    try (final InputStream fixedStream = new ByteArrayInputStream(fixedXml.getBytes(rssCharset))) {
+        feed = input.build(new XmlReader(fixedStream));
+    }
+
+    final String podcastTitle = feed.getTitle() != null ? sanitizeFilename(feed.getTitle()) : "Podcast";
+    final Path baseDir = outDir.resolve(podcastTitle);
+    Files.createDirectories(baseDir);
+
+    IO.println("Podcast: " + feed.getTitle());
+    IO.println("Saving to: " + baseDir);
+
+    final Map<String, List<String>> errors = new HashMap<>();
+    for (final SyndEntry entry : feed.getEntries()) {
+        final String title = entry.getTitle() != null ? entry.getTitle() : "Episode";
+        final String titleSanitized = sanitizeFilename(title);
+
+        final        Instant pubInstant = parsePubDate(entry);
+        final ZonedDateTime pubDate = pubInstant.atZone(ZoneId.systemDefault());
+        final String datePrefix = dateFormatter.format(pubDate);
+        final String filename = datePrefix + " - " + titleSanitized + ".mp3";
+        final Path destPath = baseDir.resolve(filename);
+
+        if (Files.exists(destPath)) {
+            IO.println("Skipping existing: " + filename);
+            errors.computeIfAbsent("Already Existing", _ -> new ArrayList<>()).add(filename);
+            continue;
+        }
+
+        final String audioUrl = getAudioUrl(entry);
+        if (audioUrl == null) {
+            IO.println("No audio URL for entry: " + title);
+            errors.computeIfAbsent("No audio URL", _ -> new ArrayList<>()).add(filename);
+            continue;
+        }
+
+        IO.println("Downloading: " + title);
+        IO.println("  URL: " + audioUrl);
+
+        final Path tempDestPath = baseDir.resolve("temp-" + filename);
+        try {
+            downloadFile(audioUrl, tempDestPath);
+        } catch (Exception e) {
+            System.err.println("  Error downloading audio: " + e.getMessage());
+            if (Files.exists(tempDestPath))
+                Files.delete(tempDestPath);
+            errors.computeIfAbsent("Error downloading audio", _ -> new ArrayList<>()).add(filename);
+            continue;
+        }
+
+        try {
+            addTags(tempDestPath, destPath, title, podcastTitle, entry.getAuthor(), pubInstant);
+        } catch (Exception e) {
+            System.err.println("  Error adding tags: " + e.getMessage());
+            errors.computeIfAbsent("Error adding tags", _ -> new ArrayList<>()).add(filename);
+        }
+
+        try {
+            setFileTime(destPath, pubInstant);
+        } catch (Exception e) {
+            System.err.println("  Error setting file time: " + e.getMessage());
+            errors.computeIfAbsent("Error setting file time", _ -> new ArrayList<>()).add(filename);
+        }
+    }
+    IO.println("\nDone.");
+    IO.println("\nIssues");
+    errors.forEach((key, value) -> IO.println("\n\n" + key + ":\n" + String.join("\n", value)));
+}
 /// usr/bin/env jbang "$0" "$@" ; exit $?
 private static final OkHttpClient client = new OkHttpClient();
+
 private static final DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("yyyyMMdd");
 
 private static String sanitizeFilename(String name) {
@@ -141,112 +249,4 @@ private static void addTags(final Path tempMp3Path, final Path mp3Path, final St
 
 private static void setFileTime(Path path, Instant instant) throws IOException {
     Files.setLastModifiedTime(path, FileTime.from(instant));
-}
-
-void main(String[] args) throws Exception {
-    if (args.length < 2) {
-        System.err.println("Usage: PodcastDownloader <rss_url_or_file> <output_dir>");
-        System.err.println("RSS can be remote URL or local file path.");
-        System.exit(1);
-    }
-
-    final String rssSource = args[0];
-    final Path outDir = Paths.get(args[1]).toAbsolutePath().normalize();
-
-    // Handle local file or URL
-    final InputStream rssStream;
-    if (Files.exists(Paths.get(rssSource))) {
-        rssStream = Files.newInputStream(Paths.get(rssSource));
-        IO.println("Reading local RSS file: " + rssSource);
-    } else {
-        IO.println("Downloading RSS from: " + rssSource);
-        final Request request = new Request.Builder().url(rssSource).build();
-        try (final Response response = client.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                throw new IOException("Failed to fetch RSS: HTTP " + response.code());
-            }
-            rssStream = response.body().byteStream();
-        }
-    }
-
-    final byte[] rssBytes;
-    try {
-        rssBytes = rssStream.readAllBytes();
-    } finally {
-        rssStream.close();
-    }
-
-    final Charset rssCharset = detectCharset(rssBytes);
-    final String rssXml = new String(rssBytes, rssCharset);
-    String fixedXml = ensureKnownNamespaces(rssXml);
-    fixedXml = fixVoidTags(fixedXml);
-
-    final SyndFeedInput input = new SyndFeedInput();
-    final SyndFeed feed;
-    try (final InputStream fixedStream = new ByteArrayInputStream(fixedXml.getBytes(rssCharset))) {
-        feed = input.build(new XmlReader(fixedStream));
-    }
-
-    final String podcastTitle = feed.getTitle() != null ? sanitizeFilename(feed.getTitle()) : "Podcast";
-    final Path baseDir = outDir.resolve(podcastTitle);
-    Files.createDirectories(baseDir);
-
-    IO.println("Podcast: " + feed.getTitle());
-    IO.println("Saving to: " + baseDir);
-
-    final Map<String, List<String>> errors = new HashMap<>();
-    for (final SyndEntry entry : feed.getEntries()) {
-        final String title = entry.getTitle() != null ? entry.getTitle() : "Episode";
-        final String titleSanitized = sanitizeFilename(title);
-
-        final        Instant pubInstant = parsePubDate(entry);
-        final ZonedDateTime pubDate = pubInstant.atZone(ZoneId.systemDefault());
-        final String datePrefix = dateFormatter.format(pubDate);
-        final String filename = datePrefix + " - " + titleSanitized + ".mp3";
-        final Path destPath = baseDir.resolve(filename);
-
-        if (Files.exists(destPath)) {
-            IO.println("Skipping existing: " + filename);
-            errors.computeIfAbsent("Already Existing", _ -> new ArrayList<>()).add(filename);
-            continue;
-        }
-
-        final String audioUrl = getAudioUrl(entry);
-        if (audioUrl == null) {
-            IO.println("No audio URL for entry: " + title);
-            errors.computeIfAbsent("No audio URL", _ -> new ArrayList<>()).add(filename);
-            continue;
-        }
-
-        IO.println("Downloading: " + title);
-        IO.println("  URL: " + audioUrl);
-
-        final Path tempDestPath = baseDir.resolve("temp-" + filename);
-        try {
-            downloadFile(audioUrl, tempDestPath);
-        } catch (Exception e) {
-            System.err.println("  Error downloading audio: " + e.getMessage());
-            if (Files.exists(tempDestPath))
-                Files.delete(tempDestPath);
-            errors.computeIfAbsent("Error downloading audio", _ -> new ArrayList<>()).add(filename);
-            continue;
-        }
-
-        try {
-            addTags(tempDestPath, destPath, title, podcastTitle, entry.getAuthor(), pubInstant);
-        } catch (Exception e) {
-            System.err.println("  Error adding tags: " + e.getMessage());
-            errors.computeIfAbsent("Error adding tags", _ -> new ArrayList<>()).add(filename);
-        }
-
-        try {
-            setFileTime(destPath, pubInstant);
-        } catch (Exception e) {
-            System.err.println("  Error setting file time: " + e.getMessage());
-            errors.computeIfAbsent("Error setting file time", _ -> new ArrayList<>()).add(filename);
-        }
-    }
-    IO.println("\nDone.");
-    IO.println("\nIssues");
-    errors.forEach((key, value) -> IO.println("\n\n" + key + ":\n" + String.join("\n", value)));
 }
