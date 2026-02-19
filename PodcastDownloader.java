@@ -191,9 +191,9 @@ private static String ensureNamespace(final String xml, final String prefix, fin
 
     final String fullTag = matcher.group(0);
     final String name = matcher.group(1);
-    final  String attrs = matcher.group(2) == null ? "" : matcher.group(2);
-    final  String suffix = fullTag.endsWith("/>") ? "/>" : ">";
-    final  String replacement = "<" + name + attrs + " " + "xmlns:" + prefix + "=\"" + uri + "\"" + suffix;
+    final String attrs = matcher.group(2) == null ? "" : matcher.group(2);
+    final String suffix = fullTag.endsWith("/>") ? "/>" : ">";
+    final String replacement = "<" + name + attrs + " " + "xmlns:" + prefix + "=\"" + uri + "\"" + suffix;
 
     return xml.substring(0, matcher.start()) + replacement + xml.substring(matcher.end());
 }
@@ -219,7 +219,10 @@ private static String fixVoidTags(final String xml) {
 private static void downloadFile(final String url, final Path dest) throws IOException {
     final Request request = new Request.Builder().url(url).build();
     try (final Response response = client.newCall(request).execute()) {
-        if (!response.isSuccessful()) throw new IOException("HTTP " + response.code());
+        if (!response.isSuccessful())
+            throw new IOException("HTTP " + response.code());
+        if (response.body() == null)
+            throw new IOException("Failed to fetch RSS: empty response body");
         try (InputStream in = response.body().byteStream();
              BufferedSink sink = Okio.buffer(Okio.sink(dest))) {
             in.transferTo(sink.outputStream());
