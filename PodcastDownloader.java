@@ -34,10 +34,12 @@ void main(String[] args) throws Exception {
     final Path outDir = Paths.get(args[1]).toAbsolutePath().normalize();
 
     // Handle local file or URL
-    final InputStream rssStream;
+    final byte[] rssBytes;
     if (Files.exists(Paths.get(rssSource))) {
-        rssStream = Files.newInputStream(Paths.get(rssSource));
         IO.println("Reading local RSS file: " + rssSource);
+        try (InputStream rssStream = Files.newInputStream(Paths.get(rssSource))) {
+            rssBytes = rssStream.readAllBytes();
+        }
     } else {
         IO.println("Downloading RSS from: " + rssSource);
         final Request request = new Request.Builder().url(rssSource).build();
@@ -45,15 +47,11 @@ void main(String[] args) throws Exception {
             if (!response.isSuccessful()) {
                 throw new IOException("Failed to fetch RSS: HTTP " + response.code());
             }
-            rssStream = response.body().byteStream();
+            if (response.body() == null) {
+                throw new IOException("Failed to fetch RSS: empty response body");
+            }
+            rssBytes = response.body().bytes();
         }
-    }
-
-    final byte[] rssBytes;
-    try {
-        rssBytes = rssStream.readAllBytes();
-    } finally {
-        rssStream.close();
     }
 
     final Charset rssCharset = detectCharset(rssBytes);
